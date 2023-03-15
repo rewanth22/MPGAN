@@ -342,19 +342,19 @@ class GAPT_G(nn.Module):
         self.n_conditioning = n_conditioning
         self.n_normalized = n_normalized
         self.block_residual = block_residual
-        
+
         # Learnable gaussian noise for sampling initial set
         if self.learnable_init_noise:
             self.mu = nn.Parameter(torch.randn(self.num_particles, init_noise_dim))
-            self.std = nn.Parameter(torch.randn(self.num_particles, init_noise_dim))
+            self.std = nn.Parameter(torch.ones(1) - 0.9)
 
             # Projecting initial noise z to embed_dims
-            self.input_embedding = LinearNet(
-                layers = [],
-                input_size = init_noise_dim,
-                output_size = embed_dim,
-                **linear_args
-            )
+            # self.input_embedding = LinearNet(
+            #     layers = [],
+            #     input_size = init_noise_dim,
+            #     output_size = embed_dim,
+            #     **linear_args
+            # )
 
         # MLP for processing conditioning vector (input dims = global noise dims + 1)
         if noise_conditioning or n_conditioning:
@@ -421,8 +421,8 @@ class GAPT_G(nn.Module):
         else:
             mask = None
         
-        if self.learnable_init_noise:
-            x = self.input_embedding(x)
+        # if self.learnable_init_noise:
+        #     x = self.input_embedding(x)
         
         # Concatenate global noise and # particles depending on conditioning
         if self.n_normalized:
@@ -453,7 +453,10 @@ class GAPT_G(nn.Module):
             std_mu = torch.zeros_like(self.mu).repeat(batch_size,1,1)
             std_sigma = torch.ones_like(self.std).repeat(batch_size,1,1)
             std_samples = torch.normal(std_mu, std_sigma)
-            return std_samples * self.std + self.mu
+            noise = torch.randn(batch_size, self.num_particles, self.mu.shape[1])
+            sample_set = self.mu.repeat(batch_size, 1, 1) + noise * self.std
+            # return std_samples * self.std + self.mu
+            return sample_set
 
 
 class GAPT_D(nn.Module):
