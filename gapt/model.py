@@ -342,6 +342,7 @@ class GAPT_G(nn.Module):
         self.n_conditioning = n_conditioning
         self.n_normalized = n_normalized
         self.block_residual = block_residual
+        
         # Learnable gaussian noise for sampling initial set
         if self.learnable_init_noise:
             self.mu = nn.Parameter(torch.randn(self.num_particles, init_noise_dim))
