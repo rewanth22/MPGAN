@@ -444,7 +444,7 @@ class GAPT_G(nn.Module):
             std_mu = torch.zeros_like(self.mu).repeat(batch_size,1,1)
             std_sigma = torch.ones_like(self.std).repeat(batch_size,1,1)
             std_samples = torch.normal(std_mu, std_sigma)
-            noise = torch.randn(batch_size, self.num_particles, self.mu.shape[1])
+            noise = torch.randn(batch_size, self.num_particles, self.mu.shape[1], device=self.mu.device)
             sample_set = self.mu.repeat(batch_size, 1, 1) + noise * self.std
             # return std_samples * self.std + self.mu
             return sample_set
