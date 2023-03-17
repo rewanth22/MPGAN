@@ -97,75 +97,36 @@ class LinearNet(nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__}(net = {self.net})"
 
-# class DotProdMAB(nn.Module):
-#     def __init__(self, dim_Q, dim_K, dim_V, num_heads, layer_norm=False, spectral_norm=False):
-#         super(DotProdMAB, self).__init__()
-#         self.dim_V = dim_V
-#         self.dim_Q = dim_Q
-#         self.num_heads = num_heads
-#         self.fc_q = nn.Linear(dim_Q, dim_V)
-#         self.fc_k = nn.Linear(dim_K, dim_V)
-#         self.fc_v = nn.Linear(dim_K, dim_V)
-#         if layer_norm:
-#             self.ln0 = nn.LayerNorm(dim_V)
-#         self.fc_o1 = nn.Linear(dim_V, dim_V)
-
-#         if spectral_norm:
-#             self.fc_q = SpectralNorm(self.fc_q)
-#             self.fc_k = SpectralNorm(self.fc_k)
-#             self.fc_v = SpectralNorm(self.fc_v)
-#             self.fc_o1 = SpectralNorm(self.fc_o1)
-
-#     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
-#         Q = self.fc_q(Q)
-#         K, V = self.fc_k(K), self.fc_v(V)
-
-#         head_dim = self.dim_V // self.num_heads
-#         Q_ = torch.cat(Q.split(head_dim, 2), 0)
-#         K_ = torch.cat(K.split(head_dim, 2), 0)
-#         V_ = torch.cat(V.split(head_dim, 2), 0)
-#         logits = Q_.bmm(K_.transpose(1,2))/math.sqrt(head_dim)
-
-#         if attn_mask is not None:
-#             inf = torch.tensor(1e38, dtype=torch.float32, device=Q.device)
-#             logits = logits + (attn_mask) * -inf
-        
-#         A = torch.softmax(logits, 2)
-#         O = torch.cat((A.bmm(V_)).split(Q.size(0), 0), 2)
-#         O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
-#         O = self.fc_o1(O)
-
-#         if need_weights:
-#             return [O, A]
-#         return [O]
-
 class DotProdMAB(nn.Module):
     def __init__(self, dim_Q, dim_K, dim_V, num_heads, layer_norm=False, spectral_norm=False):
         super(DotProdMAB, self).__init__()
-        self.dim_K = dim_K
         self.dim_V = dim_V
         self.dim_Q = dim_Q
         self.num_heads = num_heads
-        self.in_proj_weight = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V, dim_V))
-        self.in_proj_bias = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V))
+        self.fc_q = nn.Linear(dim_Q, dim_V)
+        self.fc_k = nn.Linear(dim_K, dim_V)
+        self.fc_v = nn.Linear(dim_K, dim_V)
         if layer_norm:
             self.ln0 = nn.LayerNorm(dim_V)
-        self.out_proj = nn.Linear(dim_V, dim_V)
+        self.fc_o1 = nn.Linear(dim_V, dim_V)
 
         if spectral_norm:
             self.fc_q = SpectralNorm(self.fc_q)
             self.fc_k = SpectralNorm(self.fc_k)
             self.fc_v = SpectralNorm(self.fc_v)
-            self.out_proj = SpectralNorm(self.out_proj)
+            self.fc_o1 = SpectralNorm(self.fc_o1)
+    
+    def load_weights(self, state_dict):
+        with torch.no_grad():
+            self.fc_q.weight.copy_(state_dict['in_proj_weight'][:self.dim_Q, :])
+            self.fc_k.weight.copy_(state_dict['in_proj_weight'][self.dim_Q:self.dim_Q+self.dim_V, :])
+            self.fc_v.weight.copy_(state_dict['in_proj_weight'][self.dim_Q+self.dim_V:, :])
+            self.fc_o1.weight.copy_(state_dict['out_proj.weight'])
 
-    def fc_q(self, x):
-        return torch.bmm(self.in_proj_weight[:self.dim_Q, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[:self.dim_Q]
-    
-    def fc_k(self, x):
-        return torch.bmm(self.in_proj_weight[self.dim_Q:self.dim_Q+self.dim_K, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q:self.dim_Q+self.dim_K]
-    
-    def fc_v(self, x):
-        return torch.bmm(self.in_proj_weight[self.dim_Q+self.dim_K:, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q+self.dim_K:]
+            self.fc_q.bias.copy_(state_dict['in_proj_bias'][:self.dim_Q])
+            self.fc_k.bias.copy_(state_dict['in_proj_bias'][self.dim_Q:self.dim_Q+self.dim_V])
+            self.fc_v.bias.copy_(state_dict['in_proj_bias'][self.dim_Q+self.dim_V:])
+            self.fc_o1.bias.copy_(state_dict['out_proj.bias'])
 
     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
         Q = self.fc_q(Q)
@@ -184,11 +145,62 @@ class DotProdMAB(nn.Module):
         A = torch.softmax(logits, 2)
         O = torch.cat((A.bmm(V_)).split(Q.size(0), 0), 2)
         O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
-        O = self.out_proj(O)
+        O = self.fc_o1(O)
 
         if need_weights:
             return [O, A]
         return [O]
+
+# class DotProdMAB(nn.Module):
+#     def __init__(self, dim_Q, dim_K, dim_V, num_heads, layer_norm=False, spectral_norm=False):
+#         super(DotProdMAB, self).__init__()
+#         self.dim_K = dim_K
+#         self.dim_V = dim_V
+#         self.dim_Q = dim_Q
+#         self.num_heads = num_heads
+#         self.in_proj_weight = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V, dim_V))
+#         self.in_proj_bias = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V))
+#         if layer_norm:
+#             self.ln0 = nn.LayerNorm(dim_V)
+#         self.out_proj = nn.Linear(dim_V, dim_V)
+
+#         if spectral_norm:
+#             self.fc_q = SpectralNorm(self.fc_q)
+#             self.fc_k = SpectralNorm(self.fc_k)
+#             self.fc_v = SpectralNorm(self.fc_v)
+#             self.out_proj = SpectralNorm(self.out_proj)
+
+#     def fc_q(self, x):
+#         return torch.bmm(self.in_proj_weight[:self.dim_Q, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[:self.dim_Q]
+    
+#     def fc_k(self, x):
+#         return torch.bmm(self.in_proj_weight[self.dim_Q:self.dim_Q+self.dim_K, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q:self.dim_Q+self.dim_K]
+    
+#     def fc_v(self, x):
+#         return torch.bmm(self.in_proj_weight[self.dim_Q+self.dim_K:, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q+self.dim_K:]
+
+#     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
+#         Q = self.fc_q(Q)
+#         K, V = self.fc_k(K), self.fc_v(V)
+
+#         head_dim = self.dim_V // self.num_heads
+#         Q_ = torch.cat(Q.split(head_dim, 2), 0)
+#         K_ = torch.cat(K.split(head_dim, 2), 0)
+#         V_ = torch.cat(V.split(head_dim, 2), 0)
+#         logits = Q_.bmm(K_.transpose(1,2))/math.sqrt(head_dim)
+
+#         if attn_mask is not None:
+#             inf = torch.tensor(1e38, dtype=torch.float32, device=Q.device)
+#             logits = logits + (attn_mask) * -inf
+        
+#         A = torch.softmax(logits, 2)
+#         O = torch.cat((A.bmm(V_)).split(Q.size(0), 0), 2)
+#         O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
+#         O = self.out_proj(O)
+
+#         if need_weights:
+#             return [O, A]
+#         return [O]
 
 # Adapted from https://github.com/juho-lee/set_transformer/blob/master/modules.py
 class MAB(nn.Module):
