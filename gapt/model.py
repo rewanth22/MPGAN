@@ -97,24 +97,75 @@ class LinearNet(nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__}(net = {self.net})"
 
+# class DotProdMAB(nn.Module):
+#     def __init__(self, dim_Q, dim_K, dim_V, num_heads, layer_norm=False, spectral_norm=False):
+#         super(DotProdMAB, self).__init__()
+#         self.dim_V = dim_V
+#         self.dim_Q = dim_Q
+#         self.num_heads = num_heads
+#         self.fc_q = nn.Linear(dim_Q, dim_V)
+#         self.fc_k = nn.Linear(dim_K, dim_V)
+#         self.fc_v = nn.Linear(dim_K, dim_V)
+#         if layer_norm:
+#             self.ln0 = nn.LayerNorm(dim_V)
+#         self.fc_o1 = nn.Linear(dim_V, dim_V)
+
+#         if spectral_norm:
+#             self.fc_q = SpectralNorm(self.fc_q)
+#             self.fc_k = SpectralNorm(self.fc_k)
+#             self.fc_v = SpectralNorm(self.fc_v)
+#             self.fc_o1 = SpectralNorm(self.fc_o1)
+
+#     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
+#         Q = self.fc_q(Q)
+#         K, V = self.fc_k(K), self.fc_v(V)
+
+#         head_dim = self.dim_V // self.num_heads
+#         Q_ = torch.cat(Q.split(head_dim, 2), 0)
+#         K_ = torch.cat(K.split(head_dim, 2), 0)
+#         V_ = torch.cat(V.split(head_dim, 2), 0)
+#         logits = Q_.bmm(K_.transpose(1,2))/math.sqrt(head_dim)
+
+#         if attn_mask is not None:
+#             inf = torch.tensor(1e38, dtype=torch.float32, device=Q.device)
+#             logits = logits + (attn_mask) * -inf
+        
+#         A = torch.softmax(logits, 2)
+#         O = torch.cat((A.bmm(V_)).split(Q.size(0), 0), 2)
+#         O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
+#         O = self.fc_o1(O)
+
+#         if need_weights:
+#             return [O, A]
+#         return [O]
+
 class DotProdMAB(nn.Module):
     def __init__(self, dim_Q, dim_K, dim_V, num_heads, layer_norm=False, spectral_norm=False):
         super(DotProdMAB, self).__init__()
+        self.dim_K = dim_K
         self.dim_V = dim_V
         self.dim_Q = dim_Q
         self.num_heads = num_heads
-        self.fc_q = nn.Linear(dim_Q, dim_V)
-        self.fc_k = nn.Linear(dim_K, dim_V)
-        self.fc_v = nn.Linear(dim_K, dim_V)
+        self.in_proj_weight = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V, dim_V))
+        self.in_proj_bias = nn.Parameter(torch.randn(dim_Q+dim_K+dim_V))
         if layer_norm:
             self.ln0 = nn.LayerNorm(dim_V)
-        self.fc_o1 = nn.Linear(dim_V, dim_V)
+        self.out_proj = nn.Linear(dim_V, dim_V)
 
         if spectral_norm:
             self.fc_q = SpectralNorm(self.fc_q)
             self.fc_k = SpectralNorm(self.fc_k)
             self.fc_v = SpectralNorm(self.fc_v)
-            self.fc_o1 = SpectralNorm(self.fc_o1)
+            self.out_proj = SpectralNorm(self.out_proj)
+
+    def fc_q(self, x):
+        return torch.bmm(self.in_proj_weight[:self.dim_Q, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[:self.dim_Q]
+    
+    def fc_k(self, x):
+        return torch.bmm(self.in_proj_weight[self.dim_Q:self.dim_Q+self.dim_K, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q:self.dim_Q+self.dim_K]
+    
+    def fc_v(self, x):
+        return torch.bmm(self.in_proj_weight[self.dim_Q+self.dim_K:, :].repeat(x.shape[0], 1,1), x.transpose(1,2)).transpose(1,2) + self.in_proj_bias[self.dim_Q+self.dim_K:]
 
     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
         Q = self.fc_q(Q)
@@ -133,7 +184,7 @@ class DotProdMAB(nn.Module):
         A = torch.softmax(logits, 2)
         O = torch.cat((A.bmm(V_)).split(Q.size(0), 0), 2)
         O = O if getattr(self, 'ln0', None) is None else self.ln0(O)
-        O = self.fc_o1(O)
+        O = self.out_proj(O)
 
         if need_weights:
             return [O, A]
@@ -162,7 +213,9 @@ class MAB(nn.Module):
             self.attention = DotProdMAB(embed_dim, embed_dim, embed_dim, num_heads, layer_norm, spectral_norm)
         else:
             self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-
+        # state_dict = self.attention2.state_dict()
+        # self.attention1.load_state_dict(self.attention2.state_dict())
+        
         self.conditioning = conditioning
 
         # Single linear layer to project from dim(x+z') to dim(x)
@@ -186,7 +239,7 @@ class MAB(nn.Module):
 
         self.dropout = nn.Dropout(p=dropout_p)
 
-    def forward(self, x: Tensor, y: Tensor, y_mask: Tensor = None, z: Tensor = None):
+    def forward(self, x: Tensor, y: Tensor, y_mask: Tensor = None, z: Tensor = None, print_stuff = False):
         if y_mask is not None:
             # torch.nn.MultiheadAttention needs a mask of shape [batch_size * num_heads, N, N]
             y_mask = torch.repeat_interleave(y_mask, self.num_heads, dim=0)
@@ -201,6 +254,16 @@ class MAB(nn.Module):
             y_ = torch.cat((y, z.unsqueeze(1).repeat(1, y.shape[1], 1)), dim=2)
             x = x + self.attn_ff(self.attention(x_, y_, y_, attn_mask=y_mask, need_weights=False)[0])
         else:
+            # print(self.attention1)
+            # print(self.attention2)
+            # print(self.attention1(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:10])
+            # print(self.attention2(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:10])
+            # exit()
+            if print_stuff: #and not isinstance(self.attention, torch.nn.modules.activation.MultiheadAttention):
+                print('Data :',x[0,0,:4])
+                print('Attn :',self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:4], 'Model :', type(self.attention))
+                # if not isinstance(self.attention, torch.nn.modules.activation.MultiheadAttention):
+                #     exit()
             x = x + self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0]
         if self.layer_norm:
             x = self.norm1(x)
@@ -218,13 +281,13 @@ class SAB(nn.Module):
         super(SAB, self).__init__()
         self.mab = MAB(**mab_args)
 
-    def forward(self, x: Tensor, mask: Tensor = None, z: Tensor = None):
+    def forward(self, x: Tensor, mask: Tensor = None, z: Tensor = None, print_stuff = False):
         if mask is not None:
             # torch.nn.MultiheadAttention needs a mask vector for each target node
             # i.e. reshaping from [B, N, 1] -> [B, N, N]
             mask = mask.transpose(-2, -1).repeat((1, mask.shape[-2], 1))
 
-        return self.mab(x, x, mask, z)
+        return self.mab(x, x, mask, z, print_stuff)
 
 
 # Adapted from https://github.com/juho-lee/set_transformer/blob/master/modules.py
@@ -394,6 +457,7 @@ class GAPT_G(nn.Module):
         )
 
     def forward(self, x: Tensor, labels: Tensor = None, z: Tensor = None):
+        # print('What is x? :',x[0,0,:4])
         if self.use_mask:
             # unnormalize the last jet label - the normalized # of particles per jet
             # (between 1/``num_particles`` and 1) - to between 0 and ``num_particles`` - 1
@@ -426,8 +490,8 @@ class GAPT_G(nn.Module):
                 z = num_jet_particles.unsqueeze(1).float()
             z = self.global_noise_net(z)
         
-        for sab in self.sabs:
-            sab_out = sab(x, _attn_mask(mask), z)
+        for it, sab in enumerate(self.sabs):
+            sab_out = sab(x, _attn_mask(mask), z, print_stuff=True)# if it==0 else False)
             x = x + sab_out if self.block_residual else sab_out
 
         x = torch.tanh(self.final_fc(x))

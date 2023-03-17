@@ -16,6 +16,8 @@ from torch.autograd import grad as torch_grad
 from torch.distributions.normal import Normal
 
 import numpy as np
+import random
+import pickle
 
 from os import remove
 from os.path import exists
@@ -23,6 +25,9 @@ from os.path import exists
 from tqdm import tqdm
 
 import logging
+from pdb import set_trace as bp
+import copy
+from gapt.model import DotProdMAB
 
 
 def main():
@@ -61,8 +66,6 @@ def main():
         "split_fraction": [args.ttsplit, 1 - args.ttsplit, 0],
     }
 
-    # print('Data args:',data_args)
-    # exit()
 
     X_train = JetNet(**data_args, split="train")
     X_train_loaded = DataLoader(X_train, shuffle=True, batch_size=args.batch_size, pin_memory=True)
@@ -152,6 +155,7 @@ def gen(
     num_particles: int,
     model: str = "mpgan",
     noise: Tensor = None,
+    global_noise: Tensor = None,
     labels: Tensor = None,
     noise_std: float = 0.2,
     **extra_args,
@@ -209,11 +213,13 @@ def gen(
             noise, point_noise = get_gen_noise(
                 model_args, num_samples, num_particles, model, device, noise_std
             )
-
-    global_noise = torch.randn(num_samples, model_args['global_noise_dim']).to(device) if G.noise_conditioning else None
+    # bp()
+    # print('noise before:', noise[0,0,:4])
+    if global_noise is None:
+        global_noise = torch.randn(num_samples, model_args['global_noise_dim']).to(device) if G.noise_conditioning else None
 
     gen_data = G(noise, labels, global_noise)
-
+    # print('noise after:', noise[0,0,:4])
     if "mask_manual" in extra_args and extra_args["mask_manual"]:
         # TODO: add pt_cutoff to extra_args
         gen_data = mask_manual(model_args, gen_data, extra_args["pt_cutoff"])
@@ -222,7 +228,7 @@ def gen(
         gen_data = model_args["G_pc"](gen_data.unsqueeze(1), point_noise)
 
     logging.debug(gen_data[0, :10])
-    return gen_data
+    return gen_data, noise, global_noise
 
 
 def optional_tqdm(iter_obj, use_tqdm, total=None, desc=None):
@@ -414,6 +420,8 @@ def train_D(
     gen_args={},
     augment_args=None,
     gen_data=None,
+    noise=None,
+    global_noise=None,
     labels=None,
     model="mpgan",
     epoch=0,
@@ -433,15 +441,28 @@ def train_D(
     log(f"D real output: \n {D_real_output[:10]}")
 
     if gen_data is None:
-        gen_data = gen(
-            model_args,
-            G,
-            num_samples=run_batch_size,
-            model=model,
-            labels=labels,
-            **gen_args,
-            **extra_args,
-        )
+        if noise is None:
+            gen_data, noise, global_noise = gen(
+                model_args,
+                G,
+                num_samples=run_batch_size,
+                model=model,
+                labels=labels,
+                **gen_args,
+                **extra_args,
+            )
+        else:
+            gen_data, noise, global_noise = gen(
+                model_args,
+                G,
+                num_samples=run_batch_size,
+                model=model,
+                labels=labels,
+                noise=noise,
+                global_noise=global_noise,
+                **gen_args,
+                **extra_args,
+            )
 
     if augment_args is not None and augment_args.augment:
         p = augment_args.aug_prob if not augment_args.adaptive_prob else augment_args.augment_p[-1]
@@ -466,7 +487,7 @@ def train_D(
     )
     D_loss.backward()
     D_optimizer.step()
-    return D_loss_items
+    return D_loss_items, noise, global_noise
 
 
 def calc_G_loss(loss, fake_outputs):
@@ -495,6 +516,8 @@ def train_G(
     labels=None,
     model="mpgan",
     epoch=0,
+    noise = None,
+    global_noise = None,
     **extra_args,
 ):
     logging.debug("gtrain")
@@ -502,17 +525,31 @@ def train_G(
     G_optimizer.zero_grad()
 
     run_batch_size = labels.shape[0] if labels is not None else batch_size
+    
+    if noise is None:
+        gen_data, noise, global_noise = gen(
+            model_args,
+            G,
+            num_samples=run_batch_size,
+            model=model,
+            labels=labels,
+            **gen_args,
+            **extra_args,
+        )
+    else:
+        gen_data, noise, global_noise = gen(
+            model_args,
+            G,
+            num_samples=run_batch_size,
+            model=model,
+            labels=labels,
+            noise = noise,
+            global_noise = global_noise,
+            **gen_args,
+            **extra_args,
+        )
 
-    gen_data = gen(
-        model_args,
-        G,
-        num_samples=run_batch_size,
-        model=model,
-        labels=labels,
-        **gen_args,
-        **extra_args,
-    )
-
+    # print('here noise?:', noise[0,0,:4])
     if augment_args is not None and augment_args.augment:
         p = augment_args.aug_prob if not augment_args.adaptive_prob else augment_args.augment_p[-1]
         gen_data = augment.augment(augment_args, gen_data, p)
@@ -526,8 +563,8 @@ def train_G(
 
     G_loss.backward()
     G_optimizer.step()
-
-    return G_loss.item()
+    
+    return G_loss.item(), noise, global_noise
 
 
 def save_models(D, G, D_optimizer, G_optimizer, models_path, epoch, multi_gpu=False):
@@ -833,6 +870,7 @@ def train_loop(
     G,
     D_optimizer,
     G_optimizer,
+    D2, G2, D_optimizer2, G_optimizer2,
     gen_args,
     D_losses,
     D_loss_args,
@@ -855,7 +893,7 @@ def train_loop(
             data = model_train_args["pcgan_G_inv"](data.clone())
 
         if args.num_critic > 1 or (batch_ndx == 0 or (batch_ndx - 1) % args.num_gen == 0):
-            D_loss_items = train_D(
+            returned = train_D(
                 model_train_args,
                 D,
                 G,
@@ -873,12 +911,34 @@ def train_loop(
                 print_output=(batch_ndx == lenX - 1),
                 **extra_args,
             )
+            D_loss_items = returned[0]
+
+            # train_D(
+            #     model_train_args,
+            #     D2,
+            #     G2,
+            #     D_optimizer2,
+            #     G_optimizer2,
+            #     data,
+            #     loss=args.loss,
+            #     loss_args=D_loss_args,
+            #     gen_args=gen_args,
+            #     augment_args=args,
+            #     labels=labels,
+            #     model=args.model,
+            #     epoch=epoch - 1,
+            #     noise=returned[1],
+            #     global_noise=returned[2],
+            #     # print outputs for the last iteration of each epoch
+            #     print_output=(batch_ndx == lenX - 1),
+            #     **extra_args,
+            # )
 
             for key in D_losses:
                 epoch_loss[key] += D_loss_items[key]
 
         if args.num_critic == 1 or (batch_ndx - 1) % args.num_critic == 0:
-            epoch_loss["G"] += train_G(
+            returned = train_G(
                 model_train_args,
                 D,
                 G,
@@ -892,6 +952,24 @@ def train_loop(
                 epoch=epoch - 1,
                 **extra_args,
             )
+            epoch_loss["G"] += returned[0]
+            # print('here???:', returned[1][0,0,:4])
+            # train_G(
+            #     model_train_args,
+            #     D2,
+            #     G2,
+            #     G_optimizer2,
+            #     loss=args.loss,
+            #     batch_size=args.batch_size,
+            #     gen_args=gen_args,
+            #     augment_args=args,
+            #     labels=labels,
+            #     model=args.model,
+            #     epoch=epoch - 1,
+            #     noise = returned[1],
+            #     global_noise = returned[2],
+            #     **extra_args,
+            # )
 
         if args.bottleneck:
             if batch_ndx == 10:
@@ -918,20 +996,20 @@ def train(
     model_eval_args,
     extra_args,
 ):
-    if args.start_epoch == 0 and args.save_zero:
-        eval_save_plot(
-            args,
-            X_test,
-            D,
-            G,
-            D_optimizer,
-            G_optimizer,
-            model_eval_args,
-            losses,
-            0,
-            best_epoch,
-            **extra_args,
-        )
+    # if args.start_epoch == 0 and args.save_zero:
+    #     eval_save_plot(
+    #         args,
+    #         X_test,
+    #         D,
+    #         G,
+    #         D_optimizer,
+    #         G_optimizer,
+    #         model_eval_args,
+    #         losses,
+    #         0,
+    #         best_epoch,
+    #         **extra_args,
+    #     )
 
     D_losses = ["Dr", "Df", "D"]
     if args.gp:
@@ -949,6 +1027,26 @@ def train(
     }
     lenX = len(X_train_loaded)
 
+    D2 = copy.deepcopy(D)
+    G2 = copy.deepcopy(G)
+    # setattr(getattr(getattr(getattr(G2, 'sabs'), '0'), 'mab'), 'attention', DotProdMAB(128,128,128,8))
+    G2.load_state_dict(G.state_dict())
+    # print(G2)
+    # exit()
+    D_optimizer2 = copy.deepcopy(D_optimizer)
+    G_optimizer2 = copy.deepcopy(G_optimizer)
+
+    # pickle.dump(D.state_dict(), open('D_weights.pkl', 'wb+'))
+    # pickle.dump(G.state_dict(), open('G_weights.pkl', 'wb+'))
+
+    G.load_state_dict(pickle.load(open('G_weights.pkl','rb')))
+    D.load_state_dict(pickle.load(open('D_weights.pkl','rb')))
+
+
+    torch.manual_seed(args.seed)
+    # np.random.seed(args.seed)
+    # random.seed(args.seed)
+
     for i in range(args.start_epoch, args.num_epochs):
         epoch = i + 1
         logging.info(f"Epoch {epoch} starting")
@@ -964,6 +1062,7 @@ def train(
             G,
             D_optimizer,
             G_optimizer,
+            D2, G2, D_optimizer2, G_optimizer2,
             gen_args,
             D_losses,
             D_loss_args,
