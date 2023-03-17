@@ -16,6 +16,7 @@ from torch.autograd import grad as torch_grad
 from torch.distributions.normal import Normal
 
 import numpy as np
+import pickle
 
 from os import remove
 from os.path import exists
@@ -901,6 +902,14 @@ def train_loop(
             if batch_ndx == 0:
                 break
 
+def load_MHA_to_custom_MAB(d, cmab):
+    for i, sab in enumerate(cmab.sabs):
+        sab.mab.attention.load_weights({
+            'in_proj_weight': d[f'sabs.{i}.mab.attention.in_proj_weight'],
+            'in_proj_bias': d[f'sabs.{i}.mab.attention.in_proj_bias'],
+            'out_proj.weight': d[f'sabs.{i}.mab.attention.out_proj.weight'],
+            'out_proj.bias': d[f'sabs.{i}.mab.attention.out_proj.bias'],
+        })
 
 def train(
     args,
@@ -918,20 +927,20 @@ def train(
     model_eval_args,
     extra_args,
 ):
-    if args.start_epoch == 0 and args.save_zero:
-        eval_save_plot(
-            args,
-            X_test,
-            D,
-            G,
-            D_optimizer,
-            G_optimizer,
-            model_eval_args,
-            losses,
-            0,
-            best_epoch,
-            **extra_args,
-        )
+    # if args.start_epoch == 0 and args.save_zero:
+    #     eval_save_plot(
+    #         args,
+    #         X_test,
+    #         D,
+    #         G,
+    #         D_optimizer,
+    #         G_optimizer,
+    #         model_eval_args,
+    #         losses,
+    #         0,
+    #         best_epoch,
+    #         **extra_args,
+    #     )
 
     D_losses = ["Dr", "Df", "D"]
     if args.gp:
@@ -948,6 +957,18 @@ def train(
         "label_noise": args.label_noise,
     }
     lenX = len(X_train_loaded)
+
+    # pickle.dump(D.state_dict(), open('D_weights.pkl', 'wb+'))
+    # pickle.dump(G.state_dict(), open('G_weights.pkl', 'wb+'))
+    G_saved_w = pickle.load(open('G_weights.pkl','rb'))
+    D_saved_w = pickle.load(open('D_weights.pkl','rb'))
+    G.load_state_dict(G_saved_w, strict=False)
+    D.load_state_dict(D_saved_w, strict=False)
+
+    load_MHA_to_custom_MAB(G_saved_w, G)
+    load_MHA_to_custom_MAB(D_saved_w, D)
+
+    torch.manual_seed(args.seed)
 
     for i in range(args.start_epoch, args.num_epochs):
         epoch = i + 1

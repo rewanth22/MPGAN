@@ -115,6 +115,18 @@ class DotProdMAB(nn.Module):
             self.fc_k = SpectralNorm(self.fc_k)
             self.fc_v = SpectralNorm(self.fc_v)
             self.fc_o1 = SpectralNorm(self.fc_o1)
+    
+    def load_weights(self, state_dict):
+        with torch.no_grad():
+            self.fc_q.weight.copy_(state_dict['in_proj_weight'][:self.dim_Q, :])
+            self.fc_k.weight.copy_(state_dict['in_proj_weight'][self.dim_Q:self.dim_Q+self.dim_V, :])
+            self.fc_v.weight.copy_(state_dict['in_proj_weight'][self.dim_Q+self.dim_V:, :])
+            self.fc_o1.weight.copy_(state_dict['out_proj.weight'])
+
+            self.fc_q.bias.copy_(state_dict['in_proj_bias'][:self.dim_Q])
+            self.fc_k.bias.copy_(state_dict['in_proj_bias'][self.dim_Q:self.dim_Q+self.dim_V])
+            self.fc_v.bias.copy_(state_dict['in_proj_bias'][self.dim_Q+self.dim_V:])
+            self.fc_o1.bias.copy_(state_dict['out_proj.bias'])
 
     def forward(self, Q, K, V, attn_mask=None, need_weights=False):
         Q = self.fc_q(Q)
@@ -201,6 +213,7 @@ class MAB(nn.Module):
             y_ = torch.cat((y, z.unsqueeze(1).repeat(1, y.shape[1], 1)), dim=2)
             x = x + self.attn_ff(self.attention(x_, y_, y_, attn_mask=y_mask, need_weights=False)[0])
         else:
+            print(self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:4])
             x = x + self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0]
         if self.layer_norm:
             x = self.norm1(x)
