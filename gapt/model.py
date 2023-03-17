@@ -213,7 +213,7 @@ class MAB(nn.Module):
             y_ = torch.cat((y, z.unsqueeze(1).repeat(1, y.shape[1], 1)), dim=2)
             x = x + self.attn_ff(self.attention(x_, y_, y_, attn_mask=y_mask, need_weights=False)[0])
         else:
-            print(self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:4])
+            # print(self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0][0,0,:4])
             x = x + self.attention(x, y, y, attn_mask=y_mask, need_weights=False)[0]
         if self.layer_norm:
             x = self.norm1(x)

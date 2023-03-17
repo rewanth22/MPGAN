@@ -960,13 +960,14 @@ def train(
 
     # pickle.dump(D.state_dict(), open('D_weights.pkl', 'wb+'))
     # pickle.dump(G.state_dict(), open('G_weights.pkl', 'wb+'))
-    G_saved_w = pickle.load(open('G_weights.pkl','rb'))
-    D_saved_w = pickle.load(open('D_weights.pkl','rb'))
+    G_saved_w = pickle.load(open('/graphganvol/vk/G_weights.pkl','rb'))
+    D_saved_w = pickle.load(open('/graphganvol/vk/D_weights.pkl','rb'))
     G.load_state_dict(G_saved_w, strict=False)
     D.load_state_dict(D_saved_w, strict=False)
 
-    load_MHA_to_custom_MAB(G_saved_w, G)
-    load_MHA_to_custom_MAB(D_saved_w, D)
+    if args.use_custom_mab:
+        load_MHA_to_custom_MAB(G_saved_w, G)
+        load_MHA_to_custom_MAB(D_saved_w, D)
 
     torch.manual_seed(args.seed)
 
