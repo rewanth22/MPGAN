@@ -896,14 +896,31 @@ def train_loop(
             if batch_ndx == 0:
                 break
 
-def load_MHA_to_custom_MAB(d, cmab):
+def load_MHA_to_custom_MAB(d, cmab, disc=False, ise=False):
     for i, sab in enumerate(cmab.sabs):
         sab.mab.attention.load_weights({
             'in_proj_weight': d[f'sabs.{i}.mab.attention.in_proj_weight'],
             'in_proj_bias': d[f'sabs.{i}.mab.attention.in_proj_bias'],
             'out_proj.weight': d[f'sabs.{i}.mab.attention.out_proj.weight'],
-            'out_proj.bias': d[f'sabs.{i}.mab.attention.out_proj.bias'],
+            'out_proj.bias': d[f'sabs.{i}.mab.attention.out_proj.bias']
         })
+    
+    if disc:
+        if ise:
+            for i, ise in enumerate(cmab.ises):
+                ise.mab.attention.load_weights({
+                    'in_proj_weight': d[f'ises.{i}.mab.attention.in_proj_weight'],
+                    'in_proj_bias': d[f'ises.{i}.mab.attention.in_proj_bias'],
+                    'out_proj.weight': d[f'ises.{i}.mab.attention.out_proj.weight'],
+                    'out_proj.bias': d[f'ises.{i}.mab.attention.out_proj.bias']
+                })
+        else:
+            cmab.pma.mab.attention.load_weights({
+                'in_proj_weight': d[f'pma.mab.attention.in_proj_weight'],
+                'in_proj_bias': d[f'pma.mab.attention.in_proj_bias'],
+                'out_proj.weight': d[f'pma.mab.attention.out_proj.weight'],
+                'out_proj.bias': d[f'pma.mab.attention.out_proj.bias']
+            })
 
 def train(
     args,
@@ -961,7 +978,7 @@ def train(
 
     if args.use_custom_mab:
         load_MHA_to_custom_MAB(G_saved_w, G)
-        load_MHA_to_custom_MAB(D_saved_w, D)
+        load_MHA_to_custom_MAB(D_saved_w, D, disc=True, ise=args.use_ise)
 
     torch.manual_seed(args.seed)
 
