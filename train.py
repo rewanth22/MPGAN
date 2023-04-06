@@ -840,6 +840,7 @@ def train_loop(
     for batch_ndx, data in tqdm(
         enumerate(X_train_loaded), total=lenX, mininterval=0.1, desc=f"Epoch {epoch}"
     ):
+        logging.info(f"Batch no. : {batch_ndx}")
         labels = (
             data[1].to(args.device) if (args.clabels or args.mask_c or args.gapt_mask) else None
         )
@@ -938,20 +939,20 @@ def train(
     model_eval_args,
     extra_args,
 ):
-    if args.start_epoch == 0 and args.save_zero:
-        eval_save_plot(
-            args,
-            X_test,
-            D,
-            G,
-            D_optimizer,
-            G_optimizer,
-            model_eval_args,
-            losses,
-            0,
-            best_epoch,
-            **extra_args,
-        )
+    # if args.start_epoch == 0 and args.save_zero:
+    #     eval_save_plot(
+    #         args,
+    #         X_test,
+    #         D,
+    #         G,
+    #         D_optimizer,
+    #         G_optimizer,
+    #         model_eval_args,
+    #         losses,
+    #         0,
+    #         best_epoch,
+    #         **extra_args,
+    #     )
 
     D_losses = ["Dr", "Df", "D"]
     if args.gp:
@@ -971,8 +972,8 @@ def train(
 
     # pickle.dump(D.state_dict(), open('D_weights.pkl', 'wb+'))
     # pickle.dump(G.state_dict(), open('G_weights.pkl', 'wb+'))
-    G_saved_w = pickle.load(open('/graphganvol/vk/G_weights.pkl','rb'))
-    D_saved_w = pickle.load(open('/graphganvol/vk/D_weights.pkl','rb'))
+    G_saved_w = pickle.load(open('G_weights.pkl','rb'))
+    D_saved_w = pickle.load(open('D_weights.pkl','rb'))
     G.load_state_dict(G_saved_w, strict=False)
     D.load_state_dict(D_saved_w, strict=False)
 

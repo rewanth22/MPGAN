@@ -155,6 +155,7 @@ class DotProdMAB(nn.Module):
 class MAB(nn.Module):
     def __init__(
         self,
+        name: str,
         embed_dim: int,
         num_heads: int,
         ff_output_dim: int,
@@ -168,12 +169,16 @@ class MAB(nn.Module):
         linear_args={},
     ):
         super(MAB, self).__init__()
-
+        self.name = name
         self.num_heads = num_heads
         if use_custom_mab:
             self.attention = DotProdMAB(embed_dim, embed_dim, embed_dim, num_heads, layer_norm, spectral_norm)
+            self.attention.fc_o1.weight.register_hook(self.get_backward_hook_fn(self.name + ".attention.fc_o1.weight"))
         else:
             self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+            self.attention.out_proj.weight.register_hook(self.get_backward_hook_fn(self.name + ".attention.out_proj.weight"))
+        
+        self.attention.register_forward_hook(self.get_forward_hook_fn(self.name + ".attention", 3))
 
         self.conditioning = conditioning
 
@@ -197,6 +202,33 @@ class MAB(nn.Module):
             self.norm2 = nn.LayerNorm(ff_output_dim)
 
         self.dropout = nn.Dropout(p=dropout_p)
+    
+    def get_forward_hook_fn(self, layer_name, dims):
+        if dims==3:
+            def fwd_hook_fn(_, input, output):
+                logging.debug(
+                    f"Layer_name:\n {layer_name} \n Input:\n {input[0][:2, :2, :10]} \n Output:\n {output[0][:2, :2, :10]}"
+                )
+        elif dims==2:
+            def fwd_hook_fn(_, input, output):
+                logging.debug(
+                    f"Layer_name:\n {layer_name} \n Input:\n {input[0][:2, :10]} \n Output:\n {output[0][:2, :10]}"
+                )
+        elif dims==1:
+            def fwd_hook_fn(_, input, output):
+                logging.debug(
+                    f"Layer_name:\n {layer_name} \n Input:\n {input[0][:10]} \n Output:\n {output[0][:10]}"
+                )
+        
+        return fwd_hook_fn
+    
+    def get_backward_hook_fn(self, layer_name):
+        def back_hook_fn(grads):
+            logging.debug(
+                f"Layer_name:\n {layer_name} \n Gradient:\n {grads[:2, :10]}"
+            )
+        
+        return back_hook_fn
 
     def forward(self, x: Tensor, y: Tensor, y_mask: Tensor = None, z: Tensor = None):
         if y_mask is not None:
@@ -227,9 +259,10 @@ class MAB(nn.Module):
 
 # Adapted from https://github.com/juho-lee/set_transformer/blob/master/modules.py
 class SAB(nn.Module):
-    def __init__(self, **mab_args):
+    def __init__(self, name, **mab_args):
         super(SAB, self).__init__()
-        self.mab = MAB(**mab_args)
+        self.name = name
+        self.mab = MAB(name+".mab", **mab_args)
 
     def forward(self, x: Tensor, mask: Tensor = None, z: Tensor = None):
         if mask is not None:
@@ -244,14 +277,16 @@ class SAB(nn.Module):
 class PMA(nn.Module):
     def __init__(
         self,
+        name: str,
         embed_dim: int,
         num_seeds: int,
         **mab_args,
     ):
         super(PMA, self).__init__()
+        self.name = name
         self.S = nn.Parameter(torch.Tensor(1, num_seeds, mab_args['ff_output_dim']))
         nn.init.xavier_uniform_(self.S)
-        self.mab = MAB(embed_dim, **mab_args)
+        self.mab = MAB(self.name+".mab", embed_dim, **mab_args)
 
     def forward(self, x: Tensor, mask: Tensor = None, z: Tensor = None):
         if mask is not None:
@@ -262,13 +297,14 @@ class PMA(nn.Module):
 
 # Adapted from https://github.com/juho-lee/set_transformer/blob/master/modules.py
 class ISAB(nn.Module):
-    def __init__(self, num_inds, embed_dim, **mab_args):
+    def __init__(self, name, num_inds, embed_dim, **mab_args):
         super(ISAB, self).__init__()
+        self.name = name
         self.I = nn.Parameter(torch.Tensor(1, num_inds, mab_args['ff_output_dim']))
         self.num_inds = num_inds
         nn.init.xavier_uniform_(self.I)
-        self.mab0 = MAB(embed_dim=embed_dim, **mab_args)
-        self.mab1 = MAB(embed_dim=embed_dim, **mab_args)
+        self.mab0 = MAB(self.name+".mab0", embed_dim=embed_dim, **mab_args)
+        self.mab1 = MAB(self.name+".mab1", embed_dim=embed_dim, **mab_args)
 
     def forward(self, X, mask: Tensor = None, z: Tensor = None):
         if mask is not None:
@@ -280,15 +316,17 @@ class ISAB(nn.Module):
 class ISE(nn.Module):
     def __init__(
         self,
+        name: str,
         num_inds: int,
         embed_dim: int,
         **mab_args
     ):
         super(ISE, self).__init__()
+        self.name = name
         self.I = nn.Parameter(torch.Tensor(1, num_inds, mab_args['ff_output_dim']))
         self.num_inds = num_inds
         nn.init.xavier_uniform_(self.I)
-        self.mab = MAB(embed_dim, **mab_args)
+        self.mab = MAB(self.name+".mab", embed_dim, **mab_args)
     
     def forward(self, x: Tensor, mask: Tensor = None, z: Tensor = None):
         if mask is not None:
@@ -338,6 +376,7 @@ class GAPT_G(nn.Module):
         linear_args: dict = {},
     ):
         super(GAPT_G, self).__init__()
+        self.name = "G"
         self.num_particles = num_particles
         self.output_feat_size = output_feat_size
         self.use_mask = use_mask
@@ -395,8 +434,8 @@ class GAPT_G(nn.Module):
         }
 
         # intermediate layers
-        for _ in range(sab_layers):
-            self.sabs.append(SAB(**sab_args) if not use_isab else ISAB(num_isab_nodes, **sab_args))
+        for i in range(sab_layers):
+            self.sabs.append(SAB(self.name+f".sab.{i}", **sab_args) if not use_isab else ISAB(self.name+f".isab.{i}", num_isab_nodes, **sab_args))
 
         self.final_fc = LinearNet(
             final_fc_layers,
@@ -486,6 +525,7 @@ class GAPT_D(nn.Module):
         linear_args: dict = {},
     ):
         super(GAPT_D, self).__init__()
+        self.name = "D"
         self.num_particles = num_particles
         self.input_feat_size = input_feat_size
         self.use_mask = use_mask
@@ -527,18 +567,19 @@ class GAPT_D(nn.Module):
         )
 
         # Intermediate layers
-        for _ in range(sab_layers):
-            self.sabs.append(SAB(**sab_args) if not use_isab else ISAB(num_isab_nodes, **sab_args))
+        for i in range(sab_layers):
+            self.sabs.append(SAB(self.name+f".sab.{i}", **sab_args) if not use_isab else ISAB(self.name+f".isab.{i}", num_isab_nodes, **sab_args))
         
         # Encoding/Pooling layers
         linear_net_input_dim = ff_output_dim
         if use_ise:
             self.ises = nn.ModuleList()
-            for _ in range(sab_layers):
-                self.ises.append(ISE(num_ise_nodes, **sab_args))
+            for i in range(sab_layers):
+                self.ises.append(ISE(self.name+f".ise.{i}", num_ise_nodes, **sab_args))
             linear_net_input_dim *= sab_layers
         else:
             self.pma = PMA(
+                self.name+".pma",
                 num_seeds=1,
                 **sab_args,
             )
