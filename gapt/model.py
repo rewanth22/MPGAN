@@ -413,7 +413,7 @@ class GAPT_G(nn.Module):
             mask = None
         
         # if self.learnable_init_noise:
-        x = self.input_embedding(x)
+        # x = self.input_embedding(x)
         
         # Concatenate global noise and # particles depending on conditioning
         if self.n_normalized:
