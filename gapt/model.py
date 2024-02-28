@@ -315,7 +315,7 @@ class GAPT_G(nn.Module):
         global_noise_layers: list = [],
         learnable_init_noise: bool = False,
         noise_conditioning: bool = True,
-        n_conditioning: int = 0,
+        n_conditioning: bool = False,
         n_normalized: bool = False,
         learn_anchor_from_global_noise: bool = False,
         sab_layers: int = 2,
@@ -357,15 +357,15 @@ class GAPT_G(nn.Module):
             **linear_args
         )
 
-        self.linear_layer2_1 = nn.Linear(2,1)
+        #self.linear_layer2_1 = nn.Linear(2,1)
         # MLP for processing conditioning vector (input dims = global noise dims + 1)
         # if noise_conditioning or n_conditioning:
         noise_net_input_dim = global_noise_input_dim
         # if noise_conditioning:
         #     noise_net_input_dim += global_noise_input_dim
-        if n_conditioning != 0 : # Integer to know how many variables we are conditioning on.
+        if n_conditioning: # Integer to know how many variables we are conditioning on.
             #noise_net_input_dim += 1 # add n_conditioning.
-            noise_net_input_dim += n_conditioning
+            noise_net_input_dim += 1
         self.global_noise_net = LinearNet(
             layers = global_noise_layers,
             input_size = noise_net_input_dim,
@@ -414,7 +414,7 @@ class GAPT_G(nn.Module):
             # unnormalize the last jet label - the normalized # of particles per jet
             # (between 1/``num_particles`` and 1) - to between 0 and ``num_particles`` - 1
             num_jet_particles = (labels[:, -1] * self.num_particles).int() - 1
-            momentum_jet_particles = labels[:, -2]
+            #momentum_jet_particles = labels[:, -2]
             # sort the particles by the first noise feature per particle, and the first
             # ``num_jet_particles`` particles receive a 1-mask, the rest 0.
             
@@ -423,17 +423,17 @@ class GAPT_G(nn.Module):
             #    .unsqueeze(2)
             #    .float()
             #)
-            inter = torch.cat([momentum_jet_particles.unsqueeze(1).float(),num_jet_particles.unsqueeze(1).float()], dim=1)
+            #inter = torch.cat([momentum_jet_particles.unsqueeze(1).float(),num_jet_particles.unsqueeze(1).float()], dim=1)
             #linear_layer = nn.Linear(2, 1).to(x.device)
-            compressed_inter = self.linear_layer2_1(inter)
-            compressed_inter = torch.squeeze(compressed_inter)
+            #compressed_inter = self.linear_layer2_1(inter)
+            #compressed_inter = torch.squeeze(compressed_inter)
             mask = (
                 (x[:, :, 0].argsort(1).argsort(1) <= num_jet_particles.unsqueeze(1))
                 .unsqueeze(2)
                 .float()
             )
             logging.debug(
-                f"x \n {x[:2, :, 0]} \n num particles \n {momentum_jet_particles[:2]} \n gen mask \n {mask[:2]}"
+                f"x \n {x[:2, :, 0]} \n num particles \n {num_jet_particles[:2]} \n gen mask \n {mask[:2]}"
             )
         else:
             mask = None
