@@ -433,7 +433,7 @@ class GAPT_G(nn.Module):
                 .float()
             )
             logging.debug(
-                f"x \n {x[:2, :, 0]} \n num particles \n {momentum_jet_particles[:2]} \n gen mask \n {mask[:2]}"
+                f"x \n {x[:2, :, 0]} \n num particles  \n gen mask \n {mask[:2]}"
             )
         else:
             mask = None
